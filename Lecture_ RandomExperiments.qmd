@@ -1,0 +1,742 @@
+---
+title: "Causality: Randomized Control Trials"
+subtitle: "Case Study: Impact of Insurance on Health"
+author: Mike Aguilar | https://www.linkedin.com/in/mike-aguilar-econ/ 
+format: html
+editor: visual
+toc: true
+toc-depth: 5
+toc-location: left
+---
+
+## Introduction
+
+The causal question of interest is whether having insurance impacts health outcomes.
+
+This case study is based on the NHIS data profiled in Ch1 of Mastering \`Metrics, Angrist and Pischke.
+
+The dataset provided by the textbook authors has a mix and "dirty" and "clean" data, with the authors making several transformations. The fields we will explore
+
+-   hlth: An index capturing reported health status. Higher is healthier
+-   age: Age measured in years
+-   marradult: Dummy variable. 1 = married. 0 = single
+-   fml: Dummy variable. 1 = female. 0 = male
+-   yedu: Years of education
+-   inc: \$'s of family income. Set equal to the mean of the quantile bucket in which that family falls.
+
+We will start by conducting some EDA and interpreting our results as they pertain to an RCT. We will then conduct several RCTs, varying each by their method of treatment assignment. You will notice a variable in the dataset labeled "uninsured", which we will ignore. The authors of the original study gathered this observational data, whereas we are using it to imagine and illustrate a random experiment.
+
+### Using this document
+
+Throughout this code example, you'll see several questions indicated by "Q". Each question is followed by a solution, indicated by "A".
+
+The best way to learn this material is through active participation. I suggest that you attempt to formulate your answers to each question before viewing the prepared "A" answer.
+
+### Housekeeping
+
+```{r}
+#| warning: false
+rm(list=ls()) # clear workspace
+cat("\014")  # clear console
+library(dplyr)
+library(magrittr)
+library(randomizr)
+library(labelled)
+library(marginaleffects)
+```
+
+### Load Data
+
+```{r}
+load("./DataFromMMWebsite.RData")
+```
+
+### Data Cleaning
+
+Let's peak at the data.
+
+```{r}
+data<-NHIS2009_clean %>%
+  dplyr::select(uninsured,hlth,marradult,inc,age,fml,yedu)
+remove_labels(data) #haven_labels are sometimes an issue when importing from STATA.  We can remove for ease. 
+summary(data)
+```
+
+Q: What concerns do you have in preparing and cleaning this data?
+
+A: We appear to have some missing observations in the education variable. Let's follow the authors by dropping those.
+
+#### Drop Missing
+
+```{r}
+data<-na.omit(data)
+summary(data)
+```
+
+Notice that the NA's are now gone.
+
+#### Trimming Sample
+
+Notice that the study from Mastering \`Metrics focuses on married individuals 25-59 yrs old
+
+```{r}
+data<-data%>%
+  filter(age<60 & age>24, marradult==1)
+summary(data) 
+hist(data$inc)
+```
+
+### EDA
+
+#### Health
+
+##### Histogram & Proportions
+
+Goal: Compute the proportion of individuals at each health index score.
+
+Process:
+
+-   Construct a histogram of the health variable
+-   Use the table command on the health variable
+-   Use the prop.table command on that table
+
+```{r}
+
+hist(data$hlth)
+
+tbl<-table(data$hlth)
+tbl
+
+prop.table(tbl)
+```
+
+Q: Interpret the results as it pertains to an RCT.
+
+A: There are few individuals at the lowest levels of health (1,2). Although good for those people, it implies that we won't have as much confidence in any claims regarding poor health as compared to good health.
+
+#### Income
+
+##### Histogram
+
+```{r}
+hist(data$inc)
+```
+
+Q: How does the density of income impact our RCT?
+
+A: As described earlier, income is grouped into the quantiles reported from the original study.One concern is that the frequencies vary by bin, with several bins being quite underrepresented. This might impact our ability to generate sufficiently representative random samples. This might reduce some reduce the heterogeneity of this confounder.
+
+##### Rich/Poor
+
+Goal: Create a dummy variable that uses the mean income as a threshold for determining if an individual is "rich" or "poor"
+
+Process:
+
+-   Create an ifelse statement that sets units with incomes greater than the mean income = 1 and 0 otherwise. Label this "rich".
+-   Use a pipe operator to add that "rich" series to the "data" object
+
+```{r}
+data<-data%>%
+  mutate(rich=ifelse(inc>mean(inc),1,0)) %>%
+  mutate(RichLabel = ifelse(rich==1,"Rich","Poor"))
+
+temp<-data%>%
+  group_by(rich,RichLabel)%>%
+  summarise(Freq=n(), RelFreq = n()/nrow(data))%>%
+  dplyr::select(rich,Freq,RelFreq,RichLabel)
+temp
+```
+
+Q: How does the split among poor/rich impact our RCT?
+
+A: The split is uneven. Implies that we need to think carefully about our treatment assignment. If we assigned treatment based upon income status, then we'll have a selection bias (e.g. a simple difference in means estimator won't be able to distinguish the treatment effect from the "income effect").
+
+#### Age
+
+##### Histogram
+
+```{r}
+hist(data$age)
+```
+
+Q: How does this histogram inform your confidence in an RCT?
+
+A: The data is as expected (i.e. fewer "young" and "old" workers). There don't appear to be any major gaps or swings within this covariate. That is a good sign that we will be able to randomly select a representative sample.
+
+##### Young/Old
+
+Notice that age is a continuous variable (25-59yrs old). Let's stratify the population into "young" and "old", using the mean as a threshold, which will be helpful to illustrate some concepts later.
+
+Goal: Create a dummy variable that uses the mean age as a threshold for determining if an individual is "young" or "old"
+
+Process:
+
+-   Create an ifelse statement that sets units with ages less than the mean age = 1 and 0 otherwise. Label this "young". - use a pipe operator to add that "young" series to the "data" object  
+-   Describe the young/old variable by using dplyr's summarize command to generate the frequency and relative frequency of each instance of "young"
+
+```{r}
+data<-data%>%
+  mutate(young=ifelse(age<mean(age),1,0))%>%
+  mutate(AgeLabel = ifelse(young==1,"Young","Old"))
+
+temp<-data%>%
+  group_by(young,AgeLabel) %>%
+  summarise(Freq=n(), RelFreq = n()/nrow(data))%>%
+  dplyr::select(young,Freq,RelFreq,AgeLabel)
+temp
+
+```
+
+Q: How does the split among young/old impact our RCT?
+
+A: The split is relatively even. This should make it easier to find balance when we randomly assign individuals to treatment.
+
+## Randomized Control Trial
+
+Suppose we could randomly assign treatment (i.e. we decide who gets insurance).
+
+We will consider four methods of treatment assignment: i) simple, ii) complete, iii) block, iv) cluster
+
+### Simple Treatment assignment
+
+#### Treatment Assignment
+
+A "simple" assignment assumes that we don't know the number of study participants in advance.
+
+Q: How might you practically implement a "simple" random assignment?
+
+A: We can pretend that as each individual enters the study, we flip a random coin to determine their treatment status. This could be done with a computer aided random number generator.
+
+Goal: assign each observation a treatment status with "simple" assignment.
+
+Process:
+
+-   Add a variable treat.simple to the data.RCT dataframe that uses simple_ra
+    -   simple_ra is a function that generates numbers randomly. Its default setting is a two-arm design, which assigns 0 or 1.
+-   Peak at the data
+
+```{r}
+set.seed(123)
+data.RCT<-data %>%
+  mutate(treat.simple=simple_ra(N=nrow(data)))%>%
+  mutate(TreatLabel =
+           ifelse(treat.simple==1,"Treated","UnTreated"))
+head(data.RCT)
+```
+
+##### Histogram & Proportions
+
+Goal: Examine the density of the treated/control samples
+
+Process:
+
+-   Construct a histogram of the treatment variable
+-   Create a table of the Treatment Label
+-   use the prop.table command to generate a proportions table
+
+```{r}
+hist(data.RCT$treat.simple)
+
+tbl<-table(data.RCT$TreatLabel)
+tbl
+prop.table(tbl)
+```
+
+Q: What do the histogram and proportions tell us about the RCT?
+
+A: Treatment assignment is relatively even. Roughly 49% Treated and 51% Untreated. This is as expected by design. Caution: This does not tell us if the treatment assignment is random relative to the covariates, which we need to check separately.
+
+#### Check Age Balance
+
+Goal: Determine if the treat/control groups have similar ages
+
+##### Mosaic Plot
+
+Process:
+
+-   Generate a table that contains age and treatment status
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$age, data.RCT$treat.simple)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Age", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Simple Random Assignment, Age"
+)
+```
+
+Q: What is your interpretation of the contingency table? Does it provide evidence in favor or against our RCT?
+
+A: Notice that the treatment is (relatively) evenly assigned within and across age buckets. That's a good sign that our RCT will work.
+
+Suppose the dark gray bars indicating control status were very small. This would imply that we have very few units in our control sample, reducing the confidence in our conclusions. Moreover, suppose the dark gray bars for the 58 and 59 year old groups was very large, while for all other ages it was even. Then our control sample would disproportionately capture these age buckets, which could signal covariate imbalance and selection bias.
+
+##### KS Test
+
+Compare Age densities by treatment status.
+
+```{r}
+treated<-data.RCT%>% filter(treat.simple==1)
+untreated<-data.RCT%>% filter(treat.simple==0)
+ks.test(treated$age,untreated$age)
+```
+
+The large p-Value implies that we fail to reject the null hypothesis, implying that density of ages among the treated group is the same as those in the untreated group. That's a good sign that our RCT will work.
+
+##### QQ Plot
+
+```{r}
+qqplot(treated$age,untreated$age)
+```
+
+Q: What does the QQ Plot imply?
+
+A: The qqplot is visual confirmation of the density test. The near perfect 45 degree line in the plot implies that the age densities of the treated/untreated overlap substantially.
+
+##### Equal Proportions
+
+Goal: Test whether the proportion of young people in the treated group is equal to the proportion of young people in the untreated group.
+
+Process:
+
+-   Create a table using the TreatLabel and AgeLabel\
+-   Generate a proportions table using prop.table and rows are the margin\
+-   Run an equal proportions test using prop.test
+
+```{r}
+tbl<-table(data.RCT$TreatLabel,data.RCT$AgeLabel)
+tbl
+prop.table(tbl,margin=1) #margin=1 implies we are computing fraction of column entries within a row
+prop.test(tbl)
+```
+
+Q: How do we interpret the proportions table and test? What is the implication for the RCT?
+
+A: 52.2% of the treated sample are old, while 51.8% of the untreated sample are young. The null hypothesis is that these are equal. Given the large p-value we fail to reject, implying that the proportions of young/old are similar in the treated/untreated groups. This suggests that our age (young/old) covariate is balanced, giving confidence in the RCT.
+
+#### Check Education Balance
+
+Goal: Determine if the treat/control groups have similar education
+
+Process:
+
+-   Generate a table that contains education and treatment status
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$yedu, data.RCT$treat.simple)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Education", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Simple Random Assignment, Education"
+)
+```
+
+Q: What is your interpretation of the contingency table? Does it provide evidence in favor or against our RCT?
+
+A: Notice that the treatment is (relatively) evenly assigned within and across education buckets. That's a good sign that our RCT will work.
+
+Q: What do the width of the bins represent? Can you interpret in our setting?
+
+A: A nice feature of the mosaic plot is the width of the education bins. Wider bins indicate more observations. Here we see most people have at least 12yrs of education as indicated by the wide bars. We should use caution is imputing our results to those with low levels of education.
+
+NOTE: For expediency, we will not repeat the other diagnostic tests.
+
+#### Check Income Balance
+
+Goal: Determine if the treat/control groups have similar incomes
+
+Process:
+
+-   Generate a table that contains income and treatment status. Checking income balance is tricky since we have a continuum of possible values.\
+-   Let's use the rich/poor designation.\
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$rich, data.RCT$treat.simple)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Income", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Simple Random Assignment, Income"
+)
+```
+
+Q: What is your interpretation of the contingency table? Does it provide evidence in favor or against our RCT?
+
+A: Within each income stratification it appears that we have a nice even split between treated and control 1/0.
+
+#### Estimating TE
+
+##### Compute TE via DiM
+
+Goal: Now that we have the treatment assigned, our estimate of the TE is simply a subtraction (i.e. Difference In Means DiM).
+
+Process:
+
+-   Create a treated variable containing values for health
+-   Create a control (untreated) variable containing values for health
+-   Compute the means of each
+-   Estimate TE by subtracting the means
+-   Compute a t test
+
+```{r}
+simple.treated<-data.RCT%>%
+  filter(treat.simple==1)%>%
+  dplyr::select(hlth)
+simple.control<-data.RCT%>%
+  filter(treat.simple==0)%>%
+  dplyr::select(hlth)
+TE.DiM = mean(simple.treated$hlth)-mean(simple.control$hlth)
+TE.DiM
+t.test(simple.control$hlth,simple.treated$hlth)
+```
+
+Q: What does the numerical estimate of the treatment effect mean in our case? Is it statistically significant?
+
+A: The estimated TE is .028, implying that having health insurance increases health by .028 units (in the health index). Give the small p-value we fail to reject the null, suggesting that our estimate is statistically significant.
+
+##### Computing TE via Regression
+
+Notice that we could recreate the DiM estimator via a regression.
+
+Goal: Estimate the TE via an OLS regression.
+
+Process:
+
+-   Regress hlth upon treat.simple via lm
+-   Summarize the regression model with the summary command
+
+```{r}
+TE.OLS<-lm(hlth~treat.simple,data = data.RCT)
+summary(TE.OLS)
+```
+
+Estimating via regression affords the ability to include covariates, thereby reducing sampling noise.
+
+##### ATE/ATT/ATC
+
+The DiM we've been using corresponds to the ATE. Often little distinction is made among the treatment estimands within an RCT, likely because if treatment is indeed assigned randomly, then ATT=ATE=ATC.
+
+However, randomization may not always be perfect. Regression affords us a tool to estimate these quantities.
+
+```{r}
+# Estimate model on full sample
+model<-lm(hlth~treat.simple*(marradult+inc+age+fml+yedu+young+rich),data=data.RCT)
+# Extract fitted values
+data.RCT$fitted<-model$fitted.values
+
+# Compute predicted values assuming everyone is treated
+data.RCT$Pred.Treated<-predict(model,
+                               newdata = data.frame(treat.simple=1,dplyr::select(data.RCT,!treat.simple)))
+
+
+# Compute predicted values assuming everyone is untreated
+data.RCT$Pred.UnTreated<-predict(model,
+                               newdata = data.frame(treat.simple=0,dplyr::select(data.RCT,!treat.simple)))
+
+# Calculate ATE
+ATE<-mean(data.RCT$Pred.Treated)-mean(data.RCT$Pred.UnTreated)
+ATE
+avg_comparisons(model,variables = "treat.simple")
+
+### ATT
+
+ATT = mean(data.RCT[data.RCT$treat.simple==1,]$Pred.Treated)- mean(data.RCT[data.RCT$treat.simple==1,]$Pred.UnTreated)
+ATT
+avg_comparisons(model,variables = "treat.simple",subset(data.RCT,treat.simple==1))
+
+
+### ATC
+ATC = mean(data.RCT[data.RCT$treat.simple==0,]$Pred.Treated)- mean(data.RCT[data.RCT$treat.simple==0,]$Pred.UnTreated)
+ATC
+avg_comparisons(model,variables = "treat.simple",subset(data.RCT,treat.simple==0))
+```
+
+Given the properly randomized treatment provides sample estimates of ATE, ATC, ATT that are virtually identical. This may not always be the case.
+
+### Complete Treatment assignment
+
+Goal:
+
+-   In contrast to the simple assignment, suppose you knew in advance how many entities you will have in each treatment/control sample.
+-   For instance, suppose you could guarantee 5,000 people would participate as treated samples and 4,000 as control.\
+-   If the total \# of participants is not known in advance, then complete assignment may not be possible (i.e. you don't know how many people to assign to each group if you don't know how many people will be in the study).\
+
+Q: Why might complete assignment generally be preferred?
+
+A:
+
+-   Researchers can plan exactly how many treatments will be deployed. (e.g. we know how much to budget for the treatment, etc..)
+
+-   The standard errors tend to be smaller for complete assignment
+
+Process:
+
+-   Set sample sizes for treat / control
+-   Assign treatment
+-   Check balance for age (as example)
+-   Compute TE
+
+#### Decide \# of Treat/Control
+
+Goal:
+
+-   The size of treat/control sample MAY be the same, but that is not necessary. Let's split the sample in half, but add a few more/less to each just to illustrate the flexibility.\
+-   In practice we might use this if we can only get a certain number of volunteers to be treated, can only afford a certain number of treatments, etc..
+
+Process:
+
+-   Create a vector with numerical values that defines the number of observations we want in each treat/control sample.
+-   Do so by splitting the sample in half and then moving 500 from the control to the treated group
+
+```{r}
+m_each = c(nrow(data.RCT)/2-500, nrow(data.RCT)/2+500)
+#m_each = c(nrow(data.RCT)/2, nrow(data.RCT)/2)
+```
+
+#### Complete random assignment
+
+Goal: Assign the treatment/control
+
+Process:
+
+-   Mutate the data.RCT dataframe to create treat.complete variable
+-   Assign via complete_ra
+    -   complete_ra implements a random assignment procedure in which fixed numbers of units are assigned to treatment conditions
+
+        -   Use for a multi-arm design in which the values of m_each determine the number of units assigned to each condition.
+-   Peak at the data
+-   Summarize the relative frequencies
+
+```{r}
+data.RCT<-data.RCT %>%
+  mutate(treat.complete=complete_ra(N=nrow(data.RCT),m_each=m_each))
+head(data.RCT)
+
+tbl<-table(data.RCT$treat.complete)
+tbl
+prop.table(tbl)
+```
+
+#### Check Age Balance
+
+Goal: Determine if the treat/control groups have similar ages
+
+Process:
+
+-   Generate a table that contains age and treatment status
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$age, data.RCT$treat.complete)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Age", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Complete Random Assignment, Age"
+)
+```
+
+Q: What does this contingency table imply for the RCT?
+
+A: Again, we have the treatment assignment is evenly split within each age group (dark and light gray bars are about the same size), as well as across age groups (that split is about the same going left to right on the table).
+
+We'll skip over the other stratification checks for now.
+
+#### Compute TE
+
+Goal: Now that we have the treatment assigned, our estimate of the TE is simply a subtraction.
+
+Process:
+
+-   Create a treated variable for health
+-   Create a control variable for health
+-   Compute difference in means for TE
+-   Compute a t test
+
+```{r}
+complete.treated<-data.RCT%>%
+  filter(treat.complete==1)%>%
+  select(hlth)
+complete.control<-data.RCT%>%
+  filter(treat.complete==0)%>%
+  select(hlth)
+TE = mean(complete.treated$hlth)-mean(complete.control$hlth)
+TE
+t.test(complete.control$hlth,complete.treated$hlth)
+```
+
+Q: What is the treatment effect estimate? Is it significant? How does it compare to Simple Treatment assignment?
+
+A:
+
+-   The treatment effect is now negative rather than positive
+-   Having insurance lowers health by 0.018 units (health index)
+-   However, that estimate is statistically insignificant (i.e. the sampling variability is too large to say anything with confidence)
+-   These findings are statistically and economically different than under Simple Treatment Assignment. The discrepancy could be because due to myriad factors. For instance, we could re-randomize by altering the seed and reassigning treatment. This would yield different results. When treatment is costly (a lot of money, time, etc..) this approach is not feasible. We could randomly re-sample from the existing treated/control samples, recomputing the TE, and repeating many times. This would bring us into the domain of a quasi-observational study.\
+-   Takeaway: use complete assignment if you know the size of the treated/control samples in advance.
+
+### Block treatment assignment
+
+Goal:
+
+-   In this design, subjects are sorted into blocks (strata) according to their pre-treatment covariates, and then complete random assignment is conducted within each block.
+-   Note: if more blocks and/or blocks with continuous variables, then regression are appropriate.
+-   Also note that we don't need the sample size within each block to be the same.
+-   We just need the sample size within a given block to be the same for the treated/untreated groups.
+
+Process:
+
+-   Mutate the data.RCT dataframe and create treat.block treatment vector
+-   Use the block_ra function
+    -   block_ra implements a random assignment procedure in which units that are grouped into blocks defined by pre-treatment covariates are assigned using complete random assignment within block.
+
+        -   blocks: A vector of length N that indicates which block each unit belongs to. Can be a character, factor, or numeric vector. (required)
+-   Set blocks via age
+-   Peak at the data
+-   Look at the relative frequencies of the treatment/control
+
+#### Blocking by Age
+
+```{r}
+data.RCT<-data.RCT %>%
+  mutate(treat.block=block_ra(blocks=data.RCT$age))
+head(data.RCT)
+table(data.RCT$treat.block)/nrow(data.RCT)
+```
+
+#### Check Age Balance
+
+Goal: Determine if the treat/control groups have similar ages
+
+Process:
+
+-   Generate a table that contains age and treatment status
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$age, data.RCT$treat.block)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Age", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Block Random Assignment by Age, Age"
+)
+```
+
+Interpretation:
+
+-   Notice that within each Age group the treatment/control split is precisely 50/50.\
+-   This makes sense since formed our blocks based on age.
+
+#### Check Education Balance
+
+Goal: Determine if the treat/control groups have similar education
+
+Process:
+
+-   Generate a table that contains education and treatment status
+-   Visualize with a mosaic plot
+
+```{r}
+ContingencyTable <- table(data.RCT$yedu, data.RCT$treat.block)
+mosaicplot(ContingencyTable,
+           color = TRUE,
+           xlab = "Education", # label for x-axis
+           ylab = "Treatment Status", # label for y-axis
+           main = "Block Random Assignment by Age, Education"
+)
+```
+
+Interpretation:
+
+-   Notice that the blocks are ROUGHLY even now.\
+-   This is still evidence in support of our RCT.\
+-   We only expect Age to be perfectly split since that is how we formed our blocks.\
+-   Caution: the characteristic used to form blocks should be informed by subject matter expertise.
+
+#### Compute TE
+
+Goal: Now that we have the treatment assigned, our estimate of the TE is simply a subtraction.
+
+Process:
+
+-   Create a treated variable containing values for health on block 1
+-   Create a control variable containing values for health on block 0
+-   Compute the means of each
+-   Estimate TE by subtracting the means
+-   Compute a t test
+
+```{r}
+block.treated<-data.RCT%>%
+  filter(treat.block==1)%>%
+  select(hlth)
+block.control<-data.RCT%>%
+  filter(treat.block==0)%>%
+  select(hlth)
+TE = mean(block.treated$hlth)-mean(block.control$hlth)
+TE
+t.test(block.control$hlth,block.treated$hlth)
+```
+
+Interpretation:
+
+-   Once again, the TE is statistically insignificant.
+
+### Cluster treatment assignment
+
+Sometimes your assignment is clustered into groups. For instance, every family member is exposed to an illness, or all students in a class get the same educational treatment. If we can avoid this clustering, we should.
+
+Goal: In our example, let's assume we cannot avoid clustering. For some reason, treatment is given in 4 clusters. Everyone who is rich and young is treated the same way. Everyone who is rich and old is treated the same way. Similarly, for poor young/old.
+
+Process:
+
+-   Form clusters for age/income
+-   Assign the clusters
+
+#### Form the clusters
+
+Process:
+
+-   Create a cluster label by coming the AgeLabel and RichLabel
+-   Add that cluster label to the data.RCT dataframe
+-   Peak at the data
+
+```{r}
+#clusters <- with(data.RCT, paste(young, rich, sep = "_"))
+clusters <- with(data.RCT, paste(AgeLabel, RichLabel, sep = "_"))
+data.RCT$clusters<-clusters
+temp<-data.RCT %>%
+  select(young,AgeLabel,inc,RichLabel,clusters)
+head(temp)
+```
+
+#### Cluster assignment
+
+Process:
+
+-   Use the mutate command in dplyr to add treat.cluster variable via cluster_ra
+    -   cluster_ra implements a random assignment procedure in which groups of units are assigned together (as a cluster) to treatment conditions.
+
+        -   clusters: A vector of length N that indicates which cluster each unit belongs to.
+-   Create a "table" by cluster and clustered treatment assignment
+
+```{r}
+data.RCT<-data.RCT%>%
+  mutate(treat.cluster=cluster_ra(clusters=clusters))
+table(clusters,data.RCT$treat.cluster)
+
+```
+
+Q: Any concerns regarding the clustering?
+
+A:
+
+-   Notice that within each cluster (row), all the observations are either control (0) or treatment (1). This is as expected.
+-   There are fewer young_rich individuals in our study than the other clusters, but the number (2950) is still large enough to eschew concerns. If, however, there were only a handful in that cluster, then our conclusions wouldn't hold for individuals with those characteristics.
+
+We'll forgo computing the TE since this clustering is fabricated.
