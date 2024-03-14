@@ -1,0 +1,310 @@
+
+```{r warnings = FALSE, message=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(quantmod)
+esg_data <- read_csv("esg_ratings.csv")
+stock_data <- read_csv("sp500_stocks.csv") %>% 
+  filter(Date == "2024-02-26")
+```
+
+```{r}
+combined_data <- esg_data %>% 
+  left_join(stock_data, by = "Symbol") %>% 
+  filter(!is.na(Close))
+```
+
+```{r message=FALSE}
+comps <- read_csv("sp500_companies.csv") %>% 
+  select(Symbol, Marketcap, Ebitda, Revenuegrowth)
+combined_data <- combined_data %>% 
+  left_join(comps, by = "Symbol") %>% 
+  rename(ESG_score = 'Total ESG Risk score',
+         stock_price = 'Adj Close',
+         employees = 'Full Time Employees',
+         env_score = 'Environment Risk Score',
+         social_score = 'Social Risk Score',
+         gov_score = 'Governance Risk Score',
+         controversy = 'Controversy Level',
+         controversy_score = 'Controversy Score',
+         risk_level = 'ESG Risk Level',
+         risk_percent = 'ESG Risk Percentile') %>% 
+  filter(!is.na(ESG_score)) %>% 
+  select(-c(Name, Address, Description, Close, High, Low, Open))
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(Marketcap), y = log(stock_price))) +
+  geom_point() +
+  labs(title = "Log Market Cap vs. Log Stock Price",
+       x = "Log Market Cap",
+       y = "Log Stock Price")
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(ESG_score), y = log(stock_price))) +
+  geom_point() +
+  labs(title = "Log ESG Score vs. Log Stock Price",
+       x = "Log ESG Score",
+       y = "Log Stock Price")
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(ESG_score), y = log(Marketcap))) +
+  geom_point() +
+  labs(title = "Log ESG Score vs. Log Market Cap",
+       x = "Log ESG Score",
+       y = "Log Market Cap")
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(ESG_score), y = log(Ebitda))) +
+  geom_point() +
+  labs(title = "Log ESG Score vs. Log EBITDA",
+       x = "Log ESG Score",
+       y = "Log EBITDA")
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(Ebitda), y = log(stock_price))) +
+  geom_point() +
+  labs(title = "Log EBITDA vs. Log Stock Price",
+       x = "Log EBITDA",
+       y = "Log Stock Price")
+```
+
+```{r}
+ggplot(combined_data, aes(x = log(ESG_score), y = log(stock_price), color = Sector)) +
+  geom_point() +
+  labs(title = "Log ESG Score vs. Log Stock Price by Sector",
+       x = "Log ESG Score",
+       y = "Log Stock Price")
+```
+
+```{r}
+ols_1 <- lm(stock_price ~ ESG_score * Sector + env_score + gov_score + social_score + Ebitda + employees + factor(controversy_score) + risk_level, data = combined_data)
+summary(ols_1)
+```
+
+```{r}
+newdata <- read_csv("data/morenewone.csv")
+```
+
+```{r}
+#Data from before with new ESG score
+full_stock_data <- read_csv("sp500_stocks.csv") %>% 
+  rename(stock_price = 'Adj Close')
+stock_2023_data <- full_stock_data %>% 
+  left_join(comps, by = "Symbol")
+join_data <- combined_data %>% 
+  select(-c(ESG_score, stock_price, Volume, Marketcap, Ebitda, Date,controversy_score))
+stock_2023_data <- stock_2023_data %>% 
+  left_join(join_data, by = "Symbol")
+
+
+newdata2 <- read_csv("1048.csv") %>% 
+  filter(assessmentyear == 2023 &
+           csascoretypename == "Raw" &
+           !is.na(ticker)) %>% 
+  rename(Symbol = ticker,
+         Date = scoredate)
+newdata2$Date <- as.Date(newdata2$Date, format = "%m/%d/%y")
+newdata2 <- newdata2 %>% 
+  left_join(stock_2023_data, by = c("Symbol", "Date")) %>% 
+  filter(!is.na(stock_price))
+data <- newdata2 %>% 
+  group_by(Symbol) %>% 
+  filter(Date == max(Date, na.rm = T)) %>% 
+  ungroup() %>% 
+  select(-c(dimensionscoreid, institutionid, assessmentyear, Date, csascoretypename, scoretype, aspectname, companyname)) %>% 
+  rename(ESG_score = scorevalue) %>% 
+  select(-c(Close, High, Low, Open))
+```
+
+```{r}
+#New data over time
+full_esg_data <- read_csv("1048.csv") %>% 
+  rename(Date = scoredate,
+         Symbol = ticker) %>% 
+  filter(!is.na(Symbol) & csascoretypename == "Raw")
+full_esg_data$Date <- as.Date(full_esg_data$Date, format = "%m/%d/%y")
+
+time_data <- full_esg_data %>% 
+  left_join(full_stock_data, by = c("Symbol", "Date")) %>% 
+  filter(!is.na(stock_price)) %>% 
+  select(-c(dimensionscoreid, institutionid, csascoretypename, scoretype, aspectname, companyname))
+```
+```{r}
+medianESG<-median(data$ESG_score)
+data$ESGgroup<-ifelse(data$ESG_score>medianESG,1,0)
+data <- data[complete.cases(data[, c("Sector", "employees")]), ]
+```
+
+
+```{r}
+#matching
+library(quantmod)
+library("MatchIt")
+matches.NN.Ratio1 <- matchit(ESGgroup~as.factor(Sector)+employees+Volume+Marketcap,method="nearest",distance="mahalanobis",verbose = TRUE,data=data,ratio = 1)
+summary(matches.NN.Ratio1)
+```
+
+```{r}
+#assess balance
+summary(matches.NN.Ratio1, pair.dist = FALSE)
+```
+
+
+```{r}
+#mean diff plot
+matches.NN.sum <- summary(matches.NN.Ratio1)
+plot(matches.NN.sum, var.order = "unmatched")
+```
+```{r}
+plot(matches.NN.Ratio1, type = "qq")
+```
+
+```{r}
+plot(matches.NN.Ratio1, type = "density", which.xs = ~employees+Volume+Marketcap)
+```
+
+```{r}
+#ATT
+library("marginaleffects")
+matched.NN.ATT <- match.data(matches.NN.Ratio1)
+
+model.NN.ATT<-lm(stock_price~ESGgroup+as.factor(Sector)+employees+Volume, data=matched.NN.ATT)
+
+TE.ATT<-avg_comparisons(
+  model.NN.ATT,
+  variables = "ESGgroup",
+  newdata = matched.NN.ATT,
+  vcov = ~subclass,
+  wts = "weights"
+  )
+TE.ATT
+
+PotOutcomes.ATT<-avg_predictions(
+  model.NN.ATT,
+  variables = "ESGgroup",
+  newdata = matched.NN.ATT
+)
+PotOutcomes.ATT
+```
+
+```{r}
+#ATC
+matches.ATC <- matchit(ESGgroup~as.factor(Sector)+employees+Volume+Marketcap,method="full",distance="mahalanobis",verbose = TRUE,data=data,ratio = 1,estimand = "ATC")
+
+matched.ATC <- match.data(matches.ATC)
+
+model.ATC<-lm(stock_price~ESGgroup+as.factor(Sector)+employees+Volume, data=matched.ATC)
+
+TE.ATC<-avg_comparisons(
+  model.ATC,
+  variables = "ESGgroup",
+  newdata = matched.ATC,
+  vcov = ~subclass,
+  wts = "weights"
+  )
+TE.ATC
+
+PotOutcomes.ATC<-avg_predictions(
+  model.ATC,
+  variables = "ESGgroup",
+  newdata = matched.ATC
+)
+PotOutcomes.ATC
+```
+
+
+```{r}
+#ATE
+matches.ATE <- matchit(ESGgroup~as.factor(Sector)+employees+Volume+Marketcap,method="full",distance="mahalanobis",verbose = TRUE,data=data,ratio = 1,estimand = "ATE")
+
+matched.ATE <- match.data(matches.ATE)
+
+model.ATE<-lm(stock_price~ESGgroup+as.factor(Sector)+employees+Volume, data=matched.ATC)
+
+TE.ATE<-avg_comparisons(
+  model.ATE,
+  variables = "ESGgroup",
+  newdata = matched.ATE,
+  vcov = ~subclass,
+  wts = "weights"
+  )
+TE.ATE
+
+PotOutcomes.ATE<-avg_predictions(
+  model.ATE,
+  variables = "ESGgroup",
+  newdata = matched.ATE
+)
+PotOutcomes.ATE
+```
+```{r}
+a<-c(PotOutcomes.ATT$estimate[1],PotOutcomes.ATT$estimate[2],TE.ATT$estimate,TE.ATT$conf.low,TE.ATT$conf.high)
+b<-c(PotOutcomes.ATC$estimate[2],PotOutcomes.ATC$estimate[1],TE.ATC$estimate,TE.ATC$conf.low,TE.ATC$conf.high)
+c<-c(PotOutcomes.ATE$estimate[2],PotOutcomes.ATE$estimate[1],TE.ATE$estimate,TE.ATE$conf.low,TE.ATE$conf.high)
+#Notice the ordering of the potential outcomes differs for ATT vs ATE/ATC
+
+df<-data.frame(a,b,c)
+library(data.table)
+dft<-transpose(df)
+colnames(dft)<-c('PotOutlow','PotOutWhigh','TE','TE2.5CI','TE97.5CI')
+rownames(dft)<- c('Treated','Control','All')
+dft
+```
+
+
+```{r}
+library(plm)
+library(lubridate)
+library(dplyr)
+```
+
+```{r}
+#FE
+panel_time <- pdata.frame(time_data, index = c("Symbol", "assessmentyear"))
+row.names(panel_time) <- make.unique(row.names(panel_time))
+FE_model <- plm(log(stock_price) ~ scorevalue, 
+                data = panel_time,
+                model = "within",
+                )
+summary(FE_model)
+```
+
+```{r}
+#FE
+panel_time <- pdata.frame(time_data, index = c("Symbol", "assessmentyear"))
+row.names(panel_time) <- make.unique(row.names(panel_time))
+FE_model <- plm(log(stock_price) ~ scorevalue, 
+                data = panel_time,
+                model = "within",
+                effect = "twoways"
+                )
+summary(FE_model)
+```
+
+```{r}
+#FE with volume for weights
+panel_time <- pdata.frame(time_data, index = c("Symbol", "assessmentyear"))
+row.names(panel_time) <- make.unique(row.names(panel_time))
+FE_model <- plm(log(stock_price) ~ scorevalue, 
+                data = unique_rows,
+                model = "within",
+                effect = "twoways",
+                weights = unique_rows$Volume
+                )
+summary(FE_model)
+```
+
+```{r}
+table(index(unique_rows), useNA = "ifany")
+```
+
+
+
+
+
+
